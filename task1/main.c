@@ -4,8 +4,10 @@
 #include "src/sort.h"
 
 #include <stdio.h>
+#include <time.h>
 
 int main(int argc, char** argv) {
+  clock_t start_time = clock();
   if (argc < 3) {
     fprintf(stderr, "Usage: ./sort out_file1 in_file1 [in_file2 ...]");
     return -1;
@@ -21,7 +23,7 @@ int main(int argc, char** argv) {
   }
   int in_file_count = argc - 2;
 
-  ok = scheduler_initialize();
+  ok = scheduler_initialize(in_file_count);
   if (!ok) {
     return -1;
   }
@@ -50,6 +52,7 @@ int main(int argc, char** argv) {
   if (!ok) {
     return -1;
   }
+  scheduler_destroy();
 
   ok = merge_sorted_buffers(input_buffers, in_file_count, &out_buffer);
   if (!ok) {
@@ -60,5 +63,7 @@ int main(int argc, char** argv) {
   if (!ok) {
     return -1;
   }
+  clock_t end_time = clock();
+  printf("Overall time: %lfms\n", ((double)end_time - start_time) * 1e3 / CLOCKS_PER_SEC);
   return 0;
 }

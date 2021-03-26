@@ -6,6 +6,7 @@
 #define TASK1_SORT_H
 
 #include "support.h"
+#include "coroutine.h"
 
 // Expects buf to be allocated. Sorts it in ascending order.
 void sort_buffer(buffer_t buf);

@@ -11,3 +11,5 @@ SET(SOURCES
         )
 
 add_executable(sort main.c ${SOURCES})
+
+target_link_libraries(sort rt)
