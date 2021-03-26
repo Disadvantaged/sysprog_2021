@@ -3,42 +3,16 @@
 //
 
 #include "scheduler.h"
+#include "scheduler_internal.h"
 
-#include <sys/queue.h>
-#include <sys/epoll.h>
-#include "sys/mman.h"
 #include <stdio.h>
-#include <ucontext.h>
 #include <unistd.h>
+#include <time.h>
+#include <memory.h>
+#include <aio.h>
+#include <errno.h>
 
-enum STATUS {
-  Starting,
-  Runnable,
-  Running,
-  Suspended,
-  Failed,
-};
-
-#define stack_size 1024 * 1024
-
-typedef struct entity_s {
-  enum STATUS status;
-
-  struct ucontext_t ctx;
-
-  STAILQ_ENTRY(entity_s) entities;
-} entity_t;
-
-
-static struct {
-  STAILQ_HEAD(wait_queue_t, entity_s) run_queue;
-  int epoll_fd;
-  struct ucontext_t scheduler_ctx;
-
-  int suspended_coro_count;
-
-  entity_t* current_coro;
-} scheduler_context;
+static struct scheduler_ctx_s scheduler_context;
 
 bool scheduler_add_task(void (*coroutine)(void *), void *ctx) {
   entity_t* new_entity = malloc(sizeof(entity_t));
@@ -64,6 +38,8 @@ bool scheduler_add_task(void (*coroutine)(void *), void *ctx) {
   new_entity->ctx.uc_stack.ss_sp = stack;
   new_entity->ctx.uc_stack.ss_size = stack_size;
   new_entity->ctx.uc_link = &scheduler_context.scheduler_ctx;
+  new_entity->idx = scheduler_context.last_coro_idx++;
+  new_entity->running_time = 0;
 
   makecontext(&new_entity->ctx, (void (*)(void)) coroutine, 1, ctx);
 
@@ -72,46 +48,137 @@ bool scheduler_add_task(void (*coroutine)(void *), void *ctx) {
   return true;
 }
 
-bool scheduler_initialize(int coroutine_count) {
+bool scheduler_initialize(int max_coro_count) {
   STAILQ_INIT(&scheduler_context.run_queue);
-  scheduler_context.epoll_fd = epoll_create1(0);
-  if (scheduler_context.epoll_fd == -1) {
-    perror("epoll error: ");
+  scheduler_context.suspended_coro_count = 0;
+  scheduler_context.last_coro_idx = 0;
+  scheduler_context.max_coro_count = max_coro_count;
+
+  scheduler_context.suspend_lst = NULL;
+  scheduler_context.suspend_lst = reallocarray(scheduler_context.suspend_lst, max_coro_count, sizeof(struct aiocb*));
+  if (!scheduler_context.suspend_lst) {
+    perror("Couldn't allocate suspend list.");
     return false;
   }
-  scheduler_context.suspended_coro_count = 0;
+  memset(scheduler_context.suspend_lst, 0, sizeof(struct aiocb*) * max_coro_count);
 
   return true;
 }
 
 void scheduler_destroy() {
-  close(scheduler_context.epoll_fd);
+  free(scheduler_context.suspend_lst);
 }
 
-static void scheduler_wait_any() {
-
+static void scheduler_submit_task_and_suspend(struct aiocb* ctx) {
+  for (int i = 0; i < scheduler_context.max_coro_count; ++i) {
+    if (scheduler_context.suspend_lst[i] == NULL) {
+      scheduler_context.suspend_lst[i] = ctx;
+      break;
+    }
+  }
+  scheduler_coro_suspend();
 }
 
-static entity_t* get_runnable_entity() {
+bool scheduler_coro_read_file(const char *file, char **ptr_to_bytes) {
+  ssize_t file_size = get_file_size(file);
+
+  if (file_size == -1) {
+    return false;
+  }
+
+  char* bytes = malloc(file_size + sizeof(entity_t*));
+  if (!bytes) {
+    perror("Couldn't allocate memory: ");
+    return false;
+  }
+  memset(bytes, 0, file_size);
+
+  int fd = open(file, O_RDONLY);
+  if (fd == -1) {
+    perror("Couldn't open a file: ");
+    return false;
+  }
+
+  struct aiocb ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  ctx.aio_nbytes = file_size;
+  ctx.aio_fildes = fd;
+  ctx.aio_buf = bytes + sizeof(entity_t*);
+  // Some nasty things, because making proper work with aio and aio_suspend inside the scheduler would take a lot more time.
+  *((entity_t **)bytes) = scheduler_context.current_coro;
+
+  aio_read(&ctx);
+
+  scheduler_submit_task_and_suspend(&ctx);
+
+  int status = aio_return(&ctx);
+  if (status == -1) {
+    perror("Read error: ");
+    scheduler_coro_fail();
+  }
+
+  // Shift array back.
+  memmove(bytes, bytes + sizeof(entity_t*), file_size);
+  bytes[file_size - 1] = 0;
+  *ptr_to_bytes = bytes;
+  return true;
+}
+
+void scheduler_coro_enqueue(entity_t* entity) {
+  STAILQ_INSERT_TAIL(&scheduler_context.run_queue, entity, entities);
+}
+
+static bool scheduler_wait_any() {
+  int status = aio_suspend(scheduler_context.suspend_lst, scheduler_context.max_coro_count, NULL);
+  if (status == -1) {
+    perror("aio_suspend: ");
+    return false;
+  }
+
+  for (int i = 0; i < scheduler_context.max_coro_count; ++i) {
+    if (!scheduler_context.suspend_lst[i]) {
+      continue;
+    }
+    int result = aio_error(scheduler_context.suspend_lst[i]);
+    if (result == EINPROGRESS) {
+      // Continue waiting for it.
+    } else if (result == ECANCELED) {
+      return false;
+    } else {
+      // Either it ended successfully reading from buffer, or an error happened. Let the coroutine decide, what to do with it.
+      entity_t** lst = (entity_t **) scheduler_context.suspend_lst[i]->aio_buf;
+      entity_t* entity = lst[-1];
+      scheduler_coro_enqueue(entity);
+      scheduler_context.suspend_lst[i] = NULL;
+    }
+  }
+  return true;
+}
+
+static bool get_runnable_entity(entity_t** ptr_to_entity) {
   entity_t* entity = STAILQ_FIRST(&scheduler_context.run_queue);
   if (entity != NULL) {
     STAILQ_REMOVE_HEAD(&scheduler_context.run_queue, entities);
   } else {
     if (scheduler_context.suspended_coro_count) {
-      scheduler_wait_any();
-      entity = get_runnable_entity();
+      if (!scheduler_wait_any() || !get_runnable_entity(&entity)) {
+        return false;
+      }
     }
   }
-  scheduler_context.current_coro = entity;
-  return entity;
+  *ptr_to_entity = entity;
+  return true;
 }
 
 static bool check_state(entity_t* entity) {
   if (entity->status == Runnable) {
     // The coroutine made a Yield() call. Add it to the end of the run queue.
-    STAILQ_INSERT_TAIL(&scheduler_context.run_queue, entity, entities);
+    scheduler_coro_enqueue(entity);
   } else if (entity->status == Running) {
     // The coroutine has finished executing. Remove it and delete all of its data.
+
+    printf("Coroutine %d finished. Running time: %lfms\n", entity->idx, (double)entity->running_time * 1e3 / CLOCKS_PER_SEC);
+
     munmap(entity->ctx.uc_stack.ss_sp, entity->ctx.uc_stack.ss_size);
     free(entity);
   } else if (entity->status == Suspended) {
@@ -125,25 +192,17 @@ static bool check_state(entity_t* entity) {
   return true;
 }
 
-bool scheduler_run_loop() {
+static bool switch_to_coro(entity_t* entity) {
+  scheduler_context.current_coro = entity;
 
-  while (true) {
-    entity_t* entity = get_runnable_entity();
-    if (!entity) {
-      break;
-    }
-    entity->status = Running;
+  entity->status = Running;
+  clock_t time = clock();
 
-    if (swapcontext(&scheduler_context.scheduler_ctx, &entity->ctx) == -1) {
-      return false;
-    }
-
-    if (!check_state(entity)) {
-      fprintf(stderr, "Coroutine failed.\n");
-      return false;
-    }
+  if (swapcontext(&scheduler_context.scheduler_ctx, &entity->ctx) == -1) {
+    perror("Couldn't switch to coroutine: ");
+    return false;
   }
-
+  entity->running_time += clock() - time;
   return true;
 }
 
@@ -157,13 +216,54 @@ static void switch_to_scheduler() {
   }
 }
 
+bool scheduler_run_loop() {
+  while (true) {
+    entity_t* entity;
+    bool ok = get_runnable_entity(&entity);
+    // TODO: Add a way to avoid stopping the whole run_loop because one coro failed.
+    if (!ok) {
+      return false;
+    }
+    if (!entity) {
+      break;
+    }
+
+    if (!switch_to_coro(entity)) {
+      return false;
+    }
+
+    if (!check_state(entity)) {
+      fprintf(stderr, "Coroutine failed.\n");
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static void check_inside_coroutine() {
+  if (!scheduler_context.current_coro) {
+    fprintf(stderr, "Yield() called from outside of coroutine");
+    abort();
+  }
+}
 
 void scheduler_coro_yield() {
+  check_inside_coroutine();
   scheduler_context.current_coro->status = Runnable;
   switch_to_scheduler();
 }
 
+void scheduler_coro_suspend() {
+  check_inside_coroutine();
+  scheduler_context.current_coro->status = Suspended;
+  scheduler_context.suspended_coro_count++;
+  switch_to_scheduler();
+  scheduler_context.suspended_coro_count--;
+}
+
 void scheduler_coro_fail() {
+  check_inside_coroutine();
   scheduler_context.current_coro->status = Failed;
   switch_to_scheduler();
 

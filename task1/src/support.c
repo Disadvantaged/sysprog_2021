@@ -2,8 +2,10 @@
 // Created by dgolear on 24.03.2021.
 //
 
-#include <memory.h>
 #include "support.h"
+
+#include <memory.h>
+#include <sys/stat.h>
 
 bool check_if_exists(const char *file) {
   return !access(file, R_OK);
@@ -38,7 +40,7 @@ static bool expand(buffer_t* buffer, int* capacity) {
   return true;
 }
 
-static bool bytes_to_buffer(char* bytes, int bytes_size, buffer_t* buffer) {
+bool bytes_to_buffer(char* bytes, buffer_t* buffer) {
   char* ptr = bytes;
   int capacity = 64;
   if (!expand(buffer, &capacity)) {
@@ -100,7 +102,19 @@ bool read_buffer_sync(const char *file, buffer_t *buffer) {
     }
   }
   close(fd);
-  bool res = bytes_to_buffer(bytes, size, buffer);
+  bool res = bytes_to_buffer(bytes, buffer);
   free(bytes);
   return res;
+}
+
+ssize_t get_file_size(const char *file) {
+  struct stat st;
+  int res = stat(file, &st);
+
+  if (res == -1) {
+    perror("Couldn't stat the file: ");
+    return -1;
+  }
+
+  return st.st_size;
 }
