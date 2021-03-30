@@ -30,4 +30,6 @@ void coro_sort_file(void *ctx) {
   }
 
   sort_buffer(*var->buffer);
+
+  free(var);
 }
