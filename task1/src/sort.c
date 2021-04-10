@@ -8,7 +8,11 @@
 #include <memory.h>
 
 static void merge(int* left, const int* right, int size_left, int size_right) {
-  int buf[size_left + size_right];
+  int* buf = reallocarray(NULL, size_left + size_right, sizeof(int));
+  if (!buf) {
+      perror("Couldn't allocate memory");
+      exit(1);
+  }
 
   int l = 0, r = 0;
   int res_index = 0;
@@ -26,6 +30,7 @@ static void merge(int* left, const int* right, int size_left, int size_right) {
     buf[res_index++] = right[r++];
   }
   memcpy(left, buf, (size_left + size_right) * sizeof(int));
+  free(buf);
 }
 
 

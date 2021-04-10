@@ -20,7 +20,7 @@ enum COROUTINE_STATUS {
   Failed,
 };
 
-#define stack_size 1024 * 1024
+#define stack_size (1024 * 32)
 
 typedef struct entity_s {
   enum COROUTINE_STATUS status;
