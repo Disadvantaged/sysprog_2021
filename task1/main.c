@@ -68,6 +68,6 @@ int main(int argc, char** argv) {
     return -1;
   }
   clock_t end_time = clock();
-  printf("Overall time: %lfms\n", ((double)end_time - start_time) * 1e3 / CLOCKS_PER_SEC);
+  printf("Overall time: %lfus\n", ((double)end_time - start_time) * 1e6 / CLOCKS_PER_SEC);
   return 0;
 }
