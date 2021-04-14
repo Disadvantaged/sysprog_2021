@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <time.h>
+#include <memory.h>
 
 int main(int argc, char** argv) {
   clock_t start_time = clock();
@@ -39,11 +40,13 @@ int main(int argc, char** argv) {
     input_buffers[i - 2].size = 0;
     input_buffers[i - 2].buf = NULL;
 
-    struct {
+    struct s_arg {
       const char* filename;
       buffer_t* buffer;
-    } var = {.filename = argv[i], .buffer = &input_buffers[i - 2]};
-    ok = scheduler_add_task(coro_sort_file, &var);
+    }* var = malloc(sizeof(*var));
+    var->buffer = &input_buffers[i - 1];
+    var->filename = argv[i];
+    ok = scheduler_add_task(coro_sort_file, var);
     if (!ok) {
       return -1;
     }
@@ -65,6 +68,6 @@ int main(int argc, char** argv) {
     return -1;
   }
   clock_t end_time = clock();
-  printf("Overall time: %lfms\n", ((double)end_time - start_time) * 1e3 / CLOCKS_PER_SEC);
+  printf("Overall time: %lfus\n", ((double)end_time - start_time) * 1e6 / CLOCKS_PER_SEC);
   return 0;
 }

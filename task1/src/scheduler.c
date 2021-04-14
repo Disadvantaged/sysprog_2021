@@ -177,7 +177,7 @@ static bool check_state(entity_t* entity) {
   } else if (entity->status == Running) {
     // The coroutine has finished executing. Remove it and delete all of its data.
 
-    printf("Coroutine %d finished. Running time: %lfms\n", entity->idx, (double)entity->running_time * 1e3 / CLOCKS_PER_SEC);
+    printf("Coroutine %d finished. Running time: %lfus\n", entity->idx, (double)entity->running_time * 1e6 / CLOCKS_PER_SEC);
 
     munmap(entity->ctx.uc_stack.ss_sp, entity->ctx.uc_stack.ss_size);
     free(entity);
