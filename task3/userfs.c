@@ -18,7 +18,7 @@ struct block {
 	/** Block memory. */
 	char memory[BLOCK_SIZE];
 	/** How many bytes are occupied. */
-	int occupied;
+	size_t occupied;
 	/** Next block in the file. */
 	struct block *next;
 	/** Previous block in the file. */
@@ -26,12 +26,11 @@ struct block {
 };
 
 static struct block* new_block() {
-    struct block* b = malloc(sizeof(struct block));
+    struct block* b = calloc(1, sizeof(struct block));
     if (!b) {
-        perror("write");
-        exit(1);
+        perror("calloc");
+        exit(EXIT_FAILURE);
     }
-    memset(b, 0, sizeof(struct block));
     return b;
 }
 
@@ -71,23 +70,21 @@ static struct file* new_file(const char* filename) {
         ufs_error_code = UFS_ERR_EXISTS;
         return NULL;
     }
-    struct file* f = malloc(sizeof(struct file));
+    struct file* f = calloc(1, sizeof(struct file));
     if (!f) {
-        perror("new_file");
-        exit(1);
+        perror("calloc");
+        exit(EXIT_FAILURE);
     }
-    memset(f, 0, sizeof(struct file));
-    f->block_list = f->last_block = malloc(sizeof(struct block));
+    f->block_list = f->last_block = calloc(1, sizeof(struct block));
     if (!f->block_list) {
-        perror("new_file");
-        exit(1);
+        perror("calloc");
+        exit(EXIT_FAILURE);
     }
-    memset(f->block_list, 0, sizeof(struct block));
 
     f->name = strdup(filename);
     if (!f->name) {
-        perror("new_file");
-        exit(1);
+        perror("strdup");
+        exit(EXIT_FAILURE);
     }
     f->next = file_list;
     if (file_list) {
@@ -125,7 +122,7 @@ static void free_file(struct file* f) {
         f->block_list = b->next;
         free(b);
     }
-    free(f->name);
+    free((void*)f->name);
     free(f);
 }
 
@@ -142,7 +139,6 @@ struct permissions {
             unsigned char create : 1;
             unsigned char read : 1;
             unsigned char write : 1;
-            unsigned char reserve : 5;
         };
     };
 };
@@ -170,8 +166,8 @@ static int file_descriptor_capacity = 0;
 static void resize_filedesc() {
     file_descriptors = reallocarray(file_descriptors, file_descriptor_capacity, sizeof(struct filedesc*));
     if (!file_descriptors) {
-        perror("new_fd");
-        exit(1);
+        perror("calloc");
+        exit(EXIT_FAILURE);
     }
 }
 
@@ -180,18 +176,17 @@ static struct filedesc* new_fd() {
         file_descriptor_capacity = 5;
         resize_filedesc();
     }
-    int i = 0;
+    int i;
     for (i = 0; i < file_descriptor_count; ++i) {
         if (!file_descriptors[i]) {
             break;
         }
     }
-    file_descriptors[i] = malloc(sizeof(struct filedesc));
+    file_descriptors[i] = calloc(1, sizeof(struct filedesc));
     if (!file_descriptors[i]) {
-        perror("new_fd");
-        exit(1);
+        perror("calloc");
+        exit(EXIT_FAILURE);
     }
-    memset(file_descriptors[i], 0, sizeof(struct filedesc));
     file_descriptors[i]->fd = i;
     if (i == file_descriptor_count) {
         file_descriptor_count++;
@@ -265,7 +260,7 @@ ufs_write(int fd, const char *buf, size_t size)
         return -1;
     }
     size_t buf_offset = 0;
-    size_t written = 0;
+    ssize_t written = 0;
     while (size > 0) {
         // Calculate bytes count to write to current block.
         size_t block_pos = filedesc->offset % BLOCK_SIZE;
@@ -312,7 +307,7 @@ ufs_read(int fd, char *buf, size_t size)
         ufs_error_code = UFS_ERR_NO_PERMISSION;
         return -1;
     }
-    size_t read = 0;
+    ssize_t read = 0;
     size_t buf_offset = 0;
     struct block* current = filedesc->current;
     while (size) {
