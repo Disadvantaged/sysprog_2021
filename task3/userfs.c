@@ -125,6 +125,7 @@ static void free_file(struct file* f) {
         f->block_list = b->next;
         free(b);
     }
+    free(f->name);
     free(f);
 }
 
@@ -365,7 +366,11 @@ ufs_delete(const char *filename)
         ufs_error_code = UFS_ERR_NO_FILE;
         return -1;
     }
-    f->hanging = true;
+    if (f->refs) {
+        f->hanging = true;
+    } else {
+        free_file(f);
+    }
     return 0;
 }
 
@@ -411,6 +416,7 @@ ufs_resize(int fd, size_t new_size) {
                 }
                 b = b->prev;
                 free(b->next);
+                b->next = NULL;
             }
         }
         f->last_block = b;
